@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+pymongo
+opencv-python
+torch
+sympy
+pytesseract
+sentence-transformers
+websockets
+python-socketio
+pydantic
+pydantic-settings
+motor
