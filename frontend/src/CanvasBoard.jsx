@@ -22,7 +22,7 @@ import { cachedEval, normalizeExpression, evaluateLines } from "./mathUtils";
  *  - Fade-in animation via opacity stepping
  *  - ×, ÷ symbol normalization before parsing
  */
-const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChange, onAiStatusChange }, ref) => {
+const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChange, onHistoryChange }, ref) => {
   const canvasElRef = useRef(null);
   const fabricRef = useRef(null);
   const containerRef = useRef(null);
@@ -38,10 +38,47 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
   // Debounce timer for text:changed
   const mathDebounceRef = useRef(null);
 
-  // History Stack for Undo/Redo
-  const historyRef = useRef([]);
-  const historyIndexRef = useRef(-1);
-  const isHistoryProcessing = useRef(false);
+  // Undo / Redo stacks
+  const undoStackRef = useRef([]);
+  const redoStackRef = useRef([]);
+  const isProcessingHistoryRef = useRef(false);
+  const saveHistoryTimeoutRef = useRef(null);
+
+  // Debounced save state helper
+  const saveHistory = () => {
+    if (isProcessingHistoryRef.current) return;
+
+    if (saveHistoryTimeoutRef.current) {
+      clearTimeout(saveHistoryTimeoutRef.current);
+    }
+
+    saveHistoryTimeoutRef.current = setTimeout(() => {
+      const canvas = fabricRef.current;
+      if (!canvas) return;
+
+      // Save current state with custom props
+      const json = JSON.stringify(canvas.toJSON(["__uid", "__isMathResult", "__resultKey", "id"]));
+
+      // Avoid identical consecutive states
+      if (undoStackRef.current.length > 0 && undoStackRef.current[undoStackRef.current.length - 1] === json) {
+        return;
+      }
+
+      undoStackRef.current.push(json);
+
+      // Prevent unbounded memory growth
+      if (undoStackRef.current.length > 50) {
+        undoStackRef.current.shift();
+      }
+
+      redoStackRef.current = [];
+
+      if (onHistoryChange) {
+        onHistoryChange({ canUndo: undoStackRef.current.length > 1, canRedo: false });
+      }
+    }, 100);
+  };
+
 
   // ── Initialize fabric canvas ───────────────────────────────────────────────
   useEffect(() => {
@@ -64,6 +101,14 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     };
     window.addEventListener("resize", handleResize);
 
+    // Initial state save
+    saveHistory();
+
+    // Listen to changes for history
+    canvas.on("object:added", saveHistory);
+    canvas.on("object:modified", saveHistory);
+    canvas.on("object:removed", saveHistory);
+
     // ── INLINE MATH SOLVER (IText) ─────────────────────────────────────────
     canvas.on("text:changed", (opt) => {
       const obj = opt.target;
@@ -82,7 +127,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     canvas.on("path:created", () => {
       // Only auto-solve if pen tool is active
       if (sketchTimer) clearTimeout(sketchTimer);
-      
+
       sketchTimer = setTimeout(async () => {
         try {
           await solveSketchMathInternal("http://localhost:3001/api");
@@ -92,18 +137,18 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
       }, 1500); // Shorter duration for auto-scans
     });
 
-     // Initialize brush
+    // Initialize brush
     canvas.freeDrawingBrush.color = brushColor;
     canvas.freeDrawingBrush.width = brushSize;
 
     // Save initial state for history
     const saveState = () => {
       if (isHistoryProcessing.current) return;
-      
+
       // Prevent saving if our phantom objects are changing right now
       // Since aiStatusLabelRef or text labels are added via code, we might want to track them anyway
       const json = canvas.toJSON(["__isMathResult", "fontFamily", "selectable", "evented"]);
-      
+
       // If we made a change, drop the 'future' redo states
       if (historyIndexRef.current < historyRef.current.length - 1) {
         historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1);
@@ -156,101 +201,101 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     const lineResults = evaluateLines(rawText);
 
     // Fabric IText layout constants
-    const fontSize     = Math.max(20, Math.min(100, obj.fontSize || 40));
+    const fontSize = Math.max(20, Math.min(100, obj.fontSize || 40));
     const lineHeightPx = fontSize * (obj.lineHeight || 1.16);
 
-    const bounds  = obj.getBoundingRect(true);
+    const bounds = obj.getBoundingRect(true);
     const canvasW = canvas.getWidth();
     const canvasH = canvas.getHeight();
-    const GAP     = 22;
+    const GAP = 22;
 
     // If right side is too close to canvas edge, stack answers below instead
     const stackBelow = (bounds.left + bounds.width + GAP + fontSize * 1.5) > canvasW - 20;
-    const rightX     = bounds.left + bounds.width + GAP;
+    const rightX = bounds.left + bounds.width + GAP;
 
     for (let i = 0; i < lineResults.length; i++) {
-        const { lineIndex, actionable, formatted, error, expression } = lineResults[i];
-        const key = `${uid}_line_${lineIndex}`;
+      const { lineIndex, actionable, formatted, error, expression } = lineResults[i];
+      const key = `${uid}_line_${lineIndex}`;
 
-        if (!actionable) {
-            removeResultByKey(canvas, key);
-            continue;
+      if (!actionable) {
+        removeResultByKey(canvas, key);
+        continue;
+      }
+
+      // If any actionable math is found (ends with =), show "Solving..." immediately
+      if (actionable) {
+        if (onAiStatusChange) {
+          onAiStatusChange({ status: "loading", message: "Solving..." });
         }
+      }
 
-        // If any actionable math is found (ends with =), show "Solving..." immediately
-        if (actionable) {
-            if (onAiStatusChange) {
-                onAiStatusChange({ status: "loading", message: "Solving..." });
-            }
-        }
-
-        // Check if we need AI fallback
-        if ((error || formatted === undefined) && expression) {
-            // Show canvas loading indicator
-            let resLeft, resTop, originY;
-            if (stackBelow) {
-                resLeft = bounds.left;
-                resTop  = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
-                originY = "top";
-            } else {
-                resLeft = rightX;
-                resTop  = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
-                originY = "center";
-            }
-            
-            const aiStatusKey = `${key}_ai_loading`;
-            placeResultAt(canvas, aiStatusKey, "🧠 Solving...", resLeft, resTop, Math.max(14, fontSize * 0.5), originY, "'Inter', sans-serif", "#3b82f6");
-
-            try {
-                const res = await fetch(`http://localhost:3001/api/solve-math`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ expression }),
-                });
-                const data = await res.json();
-                removeResultByKey(canvas, aiStatusKey);
-                
-                if (data.answer && !data.error) {
-                    const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
-                    placeResultAt(canvas, key, data.answer.toString(), resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
-                    if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
-                } else {
-                    if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
-                    // Final fallback could be a local re-eval or just silence
-                }
-            } catch (err) {
-                removeResultByKey(canvas, aiStatusKey);
-                if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
-            }
-            continue;
-        }
-
-        if (error || formatted === undefined) {
-          removeResultByKey(canvas, key);
-          continue;
-        }
-
-        // Local Success
-        if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
-
-        // Calculate position for this specific line
+      // Check if we need AI fallback
+      if ((error || formatted === undefined) && expression) {
+        // Show canvas loading indicator
         let resLeft, resTop, originY;
-
         if (stackBelow) {
-            resLeft = bounds.left;
-            resTop  = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
-            originY = "top";
+          resLeft = bounds.left;
+          resTop = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
+          originY = "top";
         } else {
-            resLeft = rightX;
-            resTop  = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
-            originY = "center";
+          resLeft = rightX;
+          resTop = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
+          originY = "center";
         }
 
-        const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
-        resLeft = Math.max(4, Math.min(resLeft, canvasW - displayFontSize * 2 - 4));
-        resTop  = Math.max(displayFontSize / 2, Math.min(resTop, canvasH - displayFontSize));
+        const aiStatusKey = `${key}_ai_loading`;
+        placeResultAt(canvas, aiStatusKey, "🧠 Solving...", resLeft, resTop, Math.max(14, fontSize * 0.5), originY, "'Inter', sans-serif", "#3b82f6");
 
-        placeResultAt(canvas, key, formatted, resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
+        try {
+          const res = await fetch(`http://localhost:3001/api/solve-math`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ expression }),
+          });
+          const data = await res.json();
+          removeResultByKey(canvas, aiStatusKey);
+
+          if (data.answer && !data.error) {
+            const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
+            placeResultAt(canvas, key, data.answer.toString(), resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
+            if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
+          } else {
+            if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
+            // Final fallback could be a local re-eval or just silence
+          }
+        } catch (err) {
+          removeResultByKey(canvas, aiStatusKey);
+          if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
+        }
+        continue;
+      }
+
+      if (error || formatted === undefined) {
+        removeResultByKey(canvas, key);
+        continue;
+      }
+
+      // Local Success
+      if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
+
+      // Calculate position for this specific line
+      let resLeft, resTop, originY;
+
+      if (stackBelow) {
+        resLeft = bounds.left;
+        resTop = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
+        originY = "top";
+      } else {
+        resLeft = rightX;
+        resTop = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
+        originY = "center";
+      }
+
+      const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
+      resLeft = Math.max(4, Math.min(resLeft, canvasW - displayFontSize * 2 - 4));
+      resTop = Math.max(displayFontSize / 2, Math.min(resTop, canvasH - displayFontSize));
+
+      placeResultAt(canvas, key, formatted, resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
     }
 
     // Clean up results for lines that no longer exist
@@ -269,7 +314,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
       left,
       top,
       fontSize,
-      fill: color, 
+      fill: color,
       fontFamily: fontFamily,
       selectable: true,
       evented: true,
@@ -290,14 +335,14 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
       resText.setCoords();
       const b = resText.getBoundingRect(true);
       const isOverlapping = canvas.getObjects().some(obj => {
-         if (obj.__isMathResult || obj.type === "i-text") return false;
-         const ob = obj.getBoundingRect(true);
-         return !(
-            b.left + b.width + padding < ob.left ||
-            ob.left + ob.width + padding < b.left ||
-            b.top + b.height + padding < ob.top ||
-            ob.top + ob.height + padding < b.top
-         );
+        if (obj.__isMathResult || obj.type === "i-text") return false;
+        const ob = obj.getBoundingRect(true);
+        return !(
+          b.left + b.width + padding < ob.left ||
+          ob.left + ob.width + padding < b.left ||
+          b.top + b.height + padding < ob.top ||
+          ob.top + ob.height + padding < b.top
+        );
       });
       if (!isOverlapping) break;
       resText.set({ left: resText.left + 24 });
@@ -399,84 +444,86 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ image: dataURL }),
     });
-    
+
     const data = await res.json();
     if (data.error) {
       if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
       throw new Error(data.error);
     }
 
-    if (data.answer && Array.isArray(data.answer) && data.answer.length > 0) {
-      // ── Math DETECTED: Show visual feedback ──
-      showCanvasAiStatus("🧠 Solving...");
-      if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
+    const answers = Array.isArray(data.solution)
+      ? data.solution
+      : Array.isArray(data.answer)
+        ? data.answer
+        : [];
 
-      // Quick delay to let the user see the "AI solving" state before results appear
-      await new Promise(r => setTimeout(r, 450));
-      hideCanvasAiStatus();
+    if (answers.length > 0) {
       // ── Smart placement: cluster strokes into lines ──────
       const drawnObjects = canvas.getObjects().filter(
-        (o) => !o.__isMathResult && o !== aiStatusLabelRef.current && o.type !== "i-text"
+        (o) => !o.__isMathResult && o !== status && o.type !== "i-text"
       );
 
-        const lines = [];
-        drawnObjects.forEach((o) => {
-          const b = o.getBoundingRect(true);
-          const centerY = b.top + b.height / 2;
-          
-          let foundLine = lines.find(l => Math.abs(l.centerY - centerY) < 40);
-          if (foundLine) {
-            foundLine.minX = Math.min(foundLine.minX, b.left);
-            foundLine.minY = Math.min(foundLine.minY, b.top);
-            foundLine.maxX = Math.max(foundLine.maxX, b.left + b.width);
-            foundLine.maxY = Math.max(foundLine.maxY, b.top + b.height);
-            foundLine.centerY = (foundLine.minY + foundLine.maxY) / 2;
-          } else {
-            lines.push({
-              minX: b.left, minY: b.top, maxX: b.left + b.width, maxY: b.top + b.height,
-              centerY: centerY
-            });
-          }
-        });
+      const lines = [];
+      drawnObjects.forEach((o) => {
+        const b = o.getBoundingRect(true);
+        const centerY = b.top + b.height / 2;
 
-        lines.sort((a, b) => a.centerY - b.centerY);
-
-        if (lines.length === 0) {
-          lines.push({ minX: 50, minY: 50, maxX: 200, maxY: 100, centerY: 75 });
+        let foundLine = lines.find(l => Math.abs(l.centerY - centerY) < 40);
+        if (foundLine) {
+          foundLine.minX = Math.min(foundLine.minX, b.left);
+          foundLine.minY = Math.min(foundLine.minY, b.top);
+          foundLine.maxX = Math.max(foundLine.maxX, b.left + b.width);
+          foundLine.maxY = Math.max(foundLine.maxY, b.top + b.height);
+          foundLine.centerY = (foundLine.minY + foundLine.maxY) / 2;
+        } else {
+          lines.push({
+            minX: b.left, minY: b.top, maxX: b.left + b.width, maxY: b.top + b.height,
+            centerY: centerY
+          });
         }
+      });
 
-        const GAP = 16;
-        const canvasW = canvas.getWidth();
-        const canvasH = canvas.getHeight();
+      lines.sort((a, b) => a.centerY - b.centerY);
 
-        data.answer.forEach((item, index) => {
-          const lineBox = lines[index] || lines[lines.length - 1];
-          const exprHeight = lineBox.maxY - lineBox.minY;
-          
-          // Size: ~1.2x of expression height, clamped between 16 and 48px
-          const displayFontSize = Math.max(16, Math.min(48, exprHeight * 1.2));
-          
-          let ansLeft = lineBox.maxX + GAP;
-          let ansTop = lineBox.centerY;
-          let ansOriginY = "center";
-          
-          // Clamp to right edge or wrap
-          const estimatedAnswerW = displayFontSize * 1.5;
-          if (ansLeft + estimatedAnswerW > canvasW - 20) {
-            ansLeft = lineBox.minX;
-            ansTop = lineBox.maxY + GAP;
-            ansOriginY = "top";
-          }
-          ansTop = Math.max(displayFontSize / 2 + 4, Math.min(ansTop, canvasH - displayFontSize - 4));
-
-          const key = `sketch_line_${Date.now()}_${index}`;
-          placeResultAt(canvas, key, item.ans.toString(), ansLeft, ansTop, displayFontSize, ansOriginY);
-        });
-        
-        canvas.renderAll();
-        return data.answer.length;
+      if (lines.length === 0) {
+        lines.push({ minX: 50, minY: 50, maxX: 200, maxY: 100, centerY: 75 });
       }
-      return 0; // No math detected
+
+      const GAP = 16;
+      const canvasW = canvas.getWidth();
+      const canvasH = canvas.getHeight();
+
+      answers.forEach((item, index) => {
+        const lineBox = lines[index] || lines[lines.length - 1];
+        const exprHeight = lineBox.maxY - lineBox.minY;
+
+        // Size: ~1.2x of expression height, clamped between 16 and 48px
+        const displayFontSize = Math.max(16, Math.min(48, exprHeight * 1.2));
+
+        let ansLeft = lineBox.maxX + GAP;
+        let ansTop = lineBox.centerY;
+        let ansOriginY = "center";
+
+        // Clamp to right edge or wrap
+        const estimatedAnswerW = displayFontSize * 1.5;
+        if (ansLeft + estimatedAnswerW > canvasW - 20) {
+          ansLeft = lineBox.minX;
+          ansTop = lineBox.maxY + GAP;
+          ansOriginY = "top";
+        }
+        ansTop = Math.max(displayFontSize / 2 + 4, Math.min(ansTop, canvasH - displayFontSize - 4));
+
+        const key = `sketch_line_${Date.now()}_${index}`;
+        const answerText = typeof item === "object"
+          ? (item.ans || item.value || JSON.stringify(item))
+          : item;
+        placeResultAt(canvas, key, String(answerText), ansLeft, ansTop, displayFontSize, ansOriginY);
+      });
+
+      canvas.renderAll();
+      return answers.length;
+    }
+    return 0; // No math detected
   }
 
   // ── Tool / Brush Effect ───────────────────────────────────────────────────
@@ -635,32 +682,52 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
 
   // ── Imperative API ────────────────────────────────────────────────────────
   useImperativeHandle(ref, () => ({
-    undo() {
-      if (historyIndexRef.current > 0) {
-        historyIndexRef.current--;
-        const json = historyRef.current[historyIndexRef.current];
-        const canvas = fabricRef.current;
-        isHistoryProcessing.current = true;
-        canvas.clear();
-        canvas.loadFromJSON(json, () => {
-          canvas.renderAll();
-          isHistoryProcessing.current = false;
-        });
-      }
+    undo: () => {
+      const canvas = fabricRef.current;
+      if (!canvas || undoStackRef.current.length <= 1) return;
+
+      isProcessingHistoryRef.current = true;
+
+      // Pop current state onto redo stack
+      const currentState = undoStackRef.current.pop();
+      redoStackRef.current.push(currentState);
+
+      // Get previous state to render
+      const previousState = undoStackRef.current[undoStackRef.current.length - 1];
+
+      canvas.loadFromJSON(previousState, () => {
+        canvas.renderAll();
+        isProcessingHistoryRef.current = false;
+        if (onHistoryChange) {
+          onHistoryChange({
+            canUndo: undoStackRef.current.length > 1,
+            canRedo: redoStackRef.current.length > 0
+          });
+        }
+      });
     },
-    redo() {
-      if (historyIndexRef.current < historyRef.current.length - 1) {
-        historyIndexRef.current++;
-        const json = historyRef.current[historyIndexRef.current];
-        const canvas = fabricRef.current;
-        isHistoryProcessing.current = true;
-        canvas.clear();
-        canvas.loadFromJSON(json, () => {
-          canvas.renderAll();
-          isHistoryProcessing.current = false;
-        });
-      }
+
+    redo: () => {
+      const canvas = fabricRef.current;
+      if (!canvas || redoStackRef.current.length === 0) return;
+
+      isProcessingHistoryRef.current = true;
+
+      const nextState = redoStackRef.current.pop();
+      undoStackRef.current.push(nextState);
+
+      canvas.loadFromJSON(nextState, () => {
+        canvas.renderAll();
+        isProcessingHistoryRef.current = false;
+        if (onHistoryChange) {
+          onHistoryChange({
+            canUndo: undoStackRef.current.length > 1,
+            canRedo: redoStackRef.current.length > 0
+          });
+        }
+      });
     },
+
     /**
      * addText — places a text label on canvas at a smart position.
      * Optionally accepts (content, x, y) to position explicitly.
@@ -689,9 +756,16 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     clearCanvas() {
       const canvas = fabricRef.current;
       if (!canvas) return;
+
       resultMapRef.current.clear();
+
+      isProcessingHistoryRef.current = true;
       canvas.clear();
-      canvas.setBackgroundColor("transparent", () => canvas.renderAll());
+      canvas.setBackgroundColor("transparent", () => {
+        canvas.renderAll();
+        isProcessingHistoryRef.current = false;
+        saveHistory();
+      });
     },
 
     zoomCanvas(direction) {
@@ -701,7 +775,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
       if (direction === "in") zoom *= 1.2;
       else if (direction === "out") zoom /= 1.2;
       else if (direction === "reset") zoom = 1;
-      
+
       // Keep scaling bounded
       zoom = Math.max(0.2, Math.min(zoom, 5));
       canvas.zoomToPoint(new fabric.Point(canvas.getWidth() / 2, canvas.getHeight() / 2), zoom);

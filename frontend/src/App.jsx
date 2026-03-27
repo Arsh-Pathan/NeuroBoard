@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useEffect } from "react";
 import Toolbar from "./Toolbar";
 import CanvasBoard from "./CanvasBoard";
 import SuggestionPanel from "./SuggestionPanel";
@@ -35,9 +35,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [aiState, setAiState] = useState({ status: "idle", message: "" });
   const [error, setError] = useState(null);
-  
+
   const [zoomLevel, setZoomLevel] = useState(100);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
 
   const canvasRef = useRef(null);
   const API_URL = "http://localhost:3001/api";
@@ -69,7 +70,7 @@ export default function App() {
           e.preventDefault();
           handleRedo();
         }
-      } 
+      }
       // Tool Shortcuts
       else if (!e.shiftKey && !e.altKey && !e.metaKey) {
         switch (e.key.toLowerCase()) {
@@ -108,6 +109,69 @@ export default function App() {
       setShowPlaceholder(true);
     }
   };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Process only if not typing inside an input/contenteditable
+      if (
+        e.target.tagName === "INPUT" ||
+        e.target.tagName === "TEXTAREA" ||
+        e.target.isContentEditable
+      ) {
+        return;
+      }
+
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (cmdOrCtrl && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if (cmdOrCtrl && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Process only if not typing inside an input/contenteditable
+      if (
+        e.target.tagName === "INPUT" ||
+        e.target.tagName === "TEXTAREA" ||
+        e.target.isContentEditable
+      ) {
+        return;
+      }
+
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (cmdOrCtrl && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+      } else if (cmdOrCtrl && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const setApiStatusTemp = (msg) => {
     setAiState({ status: "success", message: msg });
@@ -151,13 +215,14 @@ export default function App() {
         }
       } catch (err) {
         console.error(err);
-        setAiState({ status: "error", message: "Failed, retrying..." });
+        setAiState({ status: "error", message: "Error parsing sketch" });
+        setError(err.message);
       }
     }
   };
 
   return (
-    <div 
+    <div
       className="app-container"
       onMouseDown={() => { if (showPlaceholder) setShowPlaceholder(false); }}
     >
@@ -173,7 +238,7 @@ export default function App() {
           brushColor={brushColor}
           brushSize={brushSize}
           onZoomChange={setZoomLevel}
-          onAiStatusChange={setAiState}
+          onHistoryChange={setHistoryState}
         />
       </main>
 
@@ -198,8 +263,8 @@ export default function App() {
         onClearCanvas={handleClearCanvas}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        canUndo={true}
-        canRedo={true}
+        canUndo={historyState.canUndo}
+        canRedo={historyState.canRedo}
         brushColor={brushColor}
         setBrushColor={setBrushColor}
         brushSize={brushSize}
@@ -211,7 +276,7 @@ export default function App() {
         <button className="zoom-btn" onClick={() => handleZoom("out")} data-tooltip="Zoom Out">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
         </button>
-        <div className="zoom-level" data-tooltip="Reset Zoom" style={{cursor: "pointer"}} onClick={() => {}}>
+        <div className="zoom-level" data-tooltip="Reset Zoom" style={{ cursor: "pointer" }} onClick={() => { }}>
           {zoomLevel}%
         </div>
         <button className="zoom-btn" onClick={() => handleZoom("in")} data-tooltip="Zoom In">
@@ -220,7 +285,7 @@ export default function App() {
       </div>
 
       {/* ── Top Right: AI Suggestions Toggle ── */}
-      <button 
+      <button
         className="suggestion-toggle-btn glass-panel"
         onClick={() => setShowSuggestions(!showSuggestions)}
       >
