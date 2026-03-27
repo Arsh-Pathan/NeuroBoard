@@ -80,7 +80,10 @@ export default function MathSolver({ onSolve, onSolveSketch, apiUrl, setError })
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        onSolve(`${data.expression} = ${data.answer}`);
+        const displayAnswer = data.solution
+          ? (Array.isArray(data.solution) ? data.solution.join(", ") : data.solution)
+          : data.answer;
+        onSolve(`${data.expression} = ${displayAnswer}`);
         setMathInput("");
         setPreviews([]);
       } catch (err) {
