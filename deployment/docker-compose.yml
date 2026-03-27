@@ -22,6 +22,8 @@ services:
       dockerfile: Dockerfile
     environment:
       - MONGO_URI=mongodb://mongodb:27017
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-google/gemini-2.0-flash-001}
     expose:
       - "8000"
     depends_on:
@@ -29,7 +31,6 @@ services:
 
   mongodb:
     image: mongo:latest
-    # Exposing only for local development/debug contexts
     ports:
       - "27017:27017"
     volumes:

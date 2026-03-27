@@ -11,3 +11,5 @@ python-socketio
 pydantic
 pydantic-settings
 motor
+httpx
+numpy
