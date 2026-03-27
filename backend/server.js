@@ -35,11 +35,12 @@ require("dotenv").config({ path: "./.env" });
      const { image } = req.body; 
      if (!image) return res.status(400).json({ error: "Image data is required" });
      const answer = await solveImageMath(image);
-     res.json({ answer });
-   } catch (err) {
-     res.status(500).json({ error: err.message });
-   }
- });
+    res.json({ answer });
+  } catch (err) {
+    console.error("Sketch solver error:", err.message);
+    res.status(500).json({ error: `API Error: ${err.message}` });
+  }
+});
  
  // Topic suggestions
  app.post("/api/topic-suggestions", async (req, res) => {

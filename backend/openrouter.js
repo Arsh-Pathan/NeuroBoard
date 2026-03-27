@@ -1,6 +1,6 @@
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "openrouter/free";
+const MODEL = "openrouter/auto"; // High-availability Free Vision Model
 
 async function callOpenRouter(messages) {
   const res = await fetch(OPENROUTER_URL, {
@@ -48,7 +48,16 @@ async function solveImageMath(base64Image) {
       content: [
         {
           type: "text",
-          text: "Identify the math expression in this drawing, solve it, and return ONLY the numerical answer. No other text.",
+          text: `Identify all math expressions in the drawing. For each expression ending with '=', solve it.
+          Return a JSON array of objects with: 
+          - 'expr': the full expression (e.g., '2+2=')
+          - 'ans': the numerical result (e.g., '4')
+          - 'x': horizontal percentage (0 to 100) exactly where the answer should be placed (about 5-10% to the right of the expression's end)
+          - 'y': vertical percentage (0 to 100) that aligns horizontally with the center of the expression
+          - 'angle': angle of the expression in degrees (e.g., 5 if slanted down)
+          
+          VERY IMPORTANT: Be extremely precise with 'y' to align with the text.
+          Return ONLY valid JSON array. Output: [{"expr":"...","ans":"...","x":0,"y":0,"angle":0}]`,
         },
         {
           type: "image_url",
@@ -60,7 +69,15 @@ async function solveImageMath(base64Image) {
     },
   ];
 
-  return callOpenRouter(messages);
+  const result = await callOpenRouter(messages);
+  try {
+    // Attempt to parse AI response as JSON (cleanup markdown if present)
+    const cleaned = result.replace(/```json|```/g, "").trim();
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error("AI did not return valid JSON for multiple results:", result);
+    return [];
+  }
 }
 
 async function getTopicSuggestions(topic) {

@@ -29,7 +29,6 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
     });
     fabricRef.current = canvas;
 
-    // Resize handler
     const handleResize = () => {
       canvas.setWidth(container.offsetWidth);
       canvas.setHeight(container.offsetHeight);
@@ -37,37 +36,44 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
     };
     window.addEventListener("resize", handleResize);
 
-    // Auto-solve math when text ends with "="
+    // --- TYPED MATH SOLVER (IText) ---
     canvas.on("text:changed", (opt) => {
       const obj = opt.target;
       if (!obj || obj.type !== "i-text") return;
-
       const text = obj.text.trim();
       if (text.endsWith("=") && text.length > 2) {
         const expression = text.slice(0, -1);
         try {
-          // Safe-ish eval: only allow numbers, operators, and parentheses
           if (/^[0-9+\-*/().\s]+$/.test(expression)) {
             const result = eval(expression);
-            
-            // Add result text next to the original in "Shadows" style
-            const resultText = new fabric.Text(result.toString(), {
-              left: obj.left + obj.getBoundingRect().width + 20,
+            const resText = new fabric.Text(result.toString(), {
+              left: obj.left + obj.getBoundingRect().width + 25,
               top: obj.top,
-              fontSize: 40,
-              fill: "#3b82f6", // Bright blue marker
-              fontFamily: "'Shadows Into Light', cursive",
+              fontSize: 45,
+              fill: "#a6e3a1",
+              fontFamily: "'Rock Salt', cursive",
               selectable: true,
-              angle: Math.random() * 6 - 3,
+              angle: Math.random() * 10 - 5,
             });
-            
-            canvas.add(resultText);
+            canvas.add(resText);
             canvas.renderAll();
           }
-        } catch (e) {
-          console.error("Math eval error", e);
-        }
+        } catch (e) { console.error(e); }
       }
+    });
+
+    // --- AUTO-SOLVE SKETCH (DEBOUNCED) ---
+    let solveTimer = null;
+    canvas.on("path:created", () => {
+      if (solveTimer) clearTimeout(solveTimer);
+      // Start a 2.5-second timer. If no more drawing occurs, solve it.
+      solveTimer = setTimeout(async () => {
+        try {
+          await solveSketchMathInternal(`http://localhost:3001/api`);
+        } catch (e) {
+          console.log("No math detected");
+        }
+      }, 2500);
     });
 
     return () => {
@@ -76,18 +82,82 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
     };
   }, []);
 
-  // Update canvas state when tool changes
+  // Use a helper function for vision solve
+  async function solveSketchMathInternal(apiUrl) {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+
+    // Cleanup: only remove placeholders if any exist
+    const objects = canvas.getObjects();
+    const placeholders = objects.filter(o => o.type === 'i-text' && (o.text === 'Type Here' || !o.text.trim()));
+    placeholders.forEach(o => canvas.remove(o));
+
+    // Show status indicator
+    const status = new fabric.Text("🧠 AI Solving...", {
+      left: canvas.getWidth() / 2, top: 20, fontSize: 16, fill: "#a6e3a1",
+      fontFamily: "Outfit", selectable: false, originX: "center",
+      backgroundColor: "rgba(0,0,0,0.4)", padding: 8
+    });
+    canvas.add(status);
+    canvas.renderAll();
+
+    // Better resolution for AI 
+    const dataURL = canvas.toDataURL({ format: "png", quality: 0.6, multiplier: 1 });
+
+    try {
+      const res = await fetch(`${apiUrl}/solve-sketch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: dataURL }),
+      });
+      const data = await res.json();
+      canvas.remove(status);
+
+      if (data.error) throw new Error(data.error);
+
+      if (data.answer && Array.isArray(data.answer) && data.answer.length > 0) {
+        data.answer.forEach((item) => {
+          const x = (item.x / 100) * canvas.getWidth();
+          const y = (item.y / 100) * canvas.getHeight();
+          const marker = new fabric.Text(item.ans.toString(), {
+            left: x, top: y, fill: "#a6e3a1", fontSize: 70,
+            fontFamily: "'Rock Salt', cursive", angle: item.angle || 0,
+            selectable: true, originX: "left", originY: "center",
+            shadow: "rgba(0,0,0,0.5) 2px 2px 8px"
+          });
+          canvas.add(marker);
+        });
+      } else {
+        // Show "No Math" briefly if AI finds nothing
+        const noMath = new fabric.Text("❓ No Math Detected (Check =)", {
+          left: canvas.getWidth() / 2, top: 20, fontSize: 16, fill: "#f38ba8",
+          fontFamily: "Outfit", selectable: false, originX: "center"
+        });
+        canvas.add(noMath);
+        setTimeout(() => canvas.remove(noMath), 3000);
+      }
+      canvas.renderAll();
+    } catch (err) {
+      canvas.remove(status);
+      console.error("Sketch solver error:", err);
+      // Show error toast on canvas
+      const errorBanner = new fabric.Text(`❌ Error: Check AI Key`, {
+        left: canvas.getWidth() / 2, top: 20, fontSize: 16, fill: "white",
+        backgroundColor: "#f38ba8", padding: 10, selectable: false, originX: "center"
+      });
+      canvas.add(errorBanner);
+      setTimeout(() => canvas.remove(errorBanner), 4000);
+    }
+  }
+
+  // Update canvas state based on tools
   useEffect(() => {
     const canvas = fabricRef.current;
     if (!canvas) return;
 
-    // Reset common flags
     canvas.isDrawingMode = false;
     canvas.selection = false;
-    canvas.defaultCursor = "default";
     canvas.forEachObject((o) => (o.selectable = false));
-
-    // Clear previous event listeners
     canvas.off("mouse:down");
     canvas.off("mouse:move");
     canvas.off("mouse:up");
@@ -96,104 +166,53 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
       case "select":
         canvas.selection = true;
         canvas.forEachObject((o) => (o.selectable = true));
-        canvas.defaultCursor = "default";
         break;
-
       case "pen":
         canvas.isDrawingMode = true;
         canvas.freeDrawingBrush.color = brushColor;
         canvas.freeDrawingBrush.width = brushSize * 1.5;
         break;
-
       case "eraser":
-        canvas.defaultCursor = "crosshair";
         canvas.on("mouse:down", (opt) => {
           const target = canvas.findTarget(opt.e);
-          if (target) {
-            canvas.remove(target);
-            canvas.renderAll();
-          }
+          if (target) { canvas.remove(target); canvas.renderAll(); }
         });
         break;
-
       case "text":
-        canvas.defaultCursor = "text";
         canvas.on("mouse:down", (opt) => {
           const pointer = canvas.getPointer(opt.e);
-          const text = new fabric.IText("Type here", {
-            left: pointer.x,
-            top: pointer.y,
-            fill: brushColor,
-            fontSize: brushSize * 8,
-            fontFamily: "'Inter', sans-serif",
-            selectable: true,
+          const iText = new fabric.IText("Type Here", {
+            left: pointer.x, top: pointer.y, fill: brushColor,
+            fontSize: brushSize * 8, fontFamily: "'Inter', sans-serif"
           });
-          canvas.add(text);
-          canvas.setActiveObject(text);
-          text.enterEditing();
+          canvas.add(iText);
+          canvas.setActiveObject(iText);
+          iText.enterEditing();
           canvas.renderAll();
         });
         break;
-
       case "rectangle":
       case "circle":
       case "arrow":
-        canvas.defaultCursor = "crosshair";
         canvas.on("mouse:down", handleShapeStart);
         canvas.on("mouse:move", handleShapeMove);
         canvas.on("mouse:up", handleShapeEnd);
         break;
-      
-      default:
-        break;
     }
-
     canvas.renderAll();
   }, [activeTool, brushColor, brushSize]);
 
-  // -- Shape Creation Handlers --
-
+  // -- SHAPE HANDLERS --
   function handleShapeStart(opt) {
     const canvas = fabricRef.current;
     const pointer = canvas.getPointer(opt.e);
     drawingRef.current = { startX: pointer.x, startY: pointer.y, shape: null };
-
-    let shape;
-    const shapeConfig = {
-      fill: "transparent",
-      stroke: brushColor,
-      strokeWidth: brushSize,
-      selectable: false,
-    };
-
-    if (activeTool === "rectangle") {
-      shape = new fabric.Rect({
-        ...shapeConfig,
-        left: pointer.x,
-        top: pointer.y,
-        width: 0,
-        height: 0,
-      });
-    } else if (activeTool === "circle") {
-      shape = new fabric.Ellipse({
-        ...shapeConfig,
-        left: pointer.x,
-        top: pointer.y,
-        rx: 0,
-        ry: 0,
-      });
-    } else if (activeTool === "arrow") {
-      // Start with a line
-      shape = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], {
-        ...shapeConfig,
-        id: "arrow-line",
-      });
-    }
-
-    if (shape) {
-      drawingRef.current.shape = shape;
-      canvas.add(shape);
-    }
+    const config = { fill: "transparent", stroke: brushColor, strokeWidth: brushSize, selectable: false };
+    let shp;
+    if (activeTool === "rectangle") shp = new fabric.Rect({ ...config, left: pointer.x, top: pointer.y, width: 0, height: 0 });
+    else if (activeTool === "circle") shp = new fabric.Ellipse({ ...config, left: pointer.x, top: pointer.y, rx: 0, ry: 0 });
+    else if (activeTool === "arrow") shp = new fabric.Line([pointer.x, pointer.y, pointer.x, pointer.y], { ...config });
+    if (shp) { drawingRef.current.shape = shp; canvas.add(shp); }
   }
 
   function handleShapeMove(opt) {
@@ -201,179 +220,53 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
     const canvas = fabricRef.current;
     const pointer = canvas.getPointer(opt.e);
     const { startX, startY, shape } = drawingRef.current;
-
     if (activeTool === "rectangle") {
-      shape.set({
-        left: Math.min(startX, pointer.x),
-        top: Math.min(startY, pointer.y),
-        width: Math.abs(pointer.x - startX),
-        height: Math.abs(pointer.y - startY),
-      });
+      shape.set({ left: Math.min(startX, pointer.x), top: Math.min(startY, pointer.y), width: Math.abs(pointer.x - startX), height: Math.abs(pointer.y - startY) });
     } else if (activeTool === "circle") {
-      shape.set({
-        left: Math.min(startX, pointer.x),
-        top: Math.min(startY, pointer.y),
-        rx: Math.abs(pointer.x - startX) / 2,
-        ry: Math.abs(pointer.y - startY) / 2,
-      });
+      shape.set({ left: Math.min(startX, pointer.x), top: Math.min(startY, pointer.y), rx: Math.abs(pointer.x - startX) / 2, ry: Math.abs(pointer.y - startY) / 2 });
     } else if (activeTool === "arrow") {
       shape.set({ x2: pointer.x, y2: pointer.y });
     }
-
-    shape.setCoords();
-    canvas.renderAll();
+    shape.setCoords(); canvas.renderAll();
   }
 
-  function handleShapeEnd() {
-    if (drawingRef.current && drawingRef.current.shape) {
-      drawingRef.current.shape.set({ selectable: true });
-    }
-    drawingRef.current = null;
-  }
+  function handleShapeEnd() { drawingRef.current = null; }
 
-  // --- NEW: Sketch to Shape Conversion Logic ---
-
-  function processPath(obj) {
+  function processPathCleanup(obj) {
     if (!obj || obj.type !== "path") return;
     const canvas = fabricRef.current;
-    if (!canvas) return;
-
-    const bounds = obj.getBoundingRect();
-    const w = bounds.width;
-    const h = bounds.height;
-
-    // Ignore tiny specks (less than 10px)
-    if (w < 10 && h < 10) return;
-
-    let shape;
-    const baseStyle = {
-      left: bounds.left,
-      top: bounds.top,
-      fill: "transparent",
-      stroke: "white", // Dark theme friendly, or use obj.stroke
-      strokeWidth: 2,
-      selectable: true,
-    };
-
-    /**
-     * User's Rules:
-     * 1. |w - h| < 20 -> Circle
-     * 2. h < 15 -> Horizontal Line
-     * 3. Else -> Rectangle
-     */
-    if (Math.abs(w - h) < 20) {
-      // It's a Circle
-      const radius = Math.max(w, h) / 2;
-      shape = new fabric.Circle({
-        ...baseStyle,
-        radius: radius,
-      });
-    } else if (h < 15) {
-      // It's a Horizontal Line
-      shape = new fabric.Line([bounds.left, bounds.top + h / 2, bounds.left + w, bounds.top + h / 2], {
-        ...baseStyle,
-      });
-    } else {
-      // It's a Rectangle
-      shape = new fabric.Rect({
-        ...baseStyle,
-        width: w,
-        height: h,
-      });
-    }
-
-    if (shape) {
-      canvas.remove(obj);
-      canvas.add(shape);
-      canvas.setActiveObject(shape);
-      canvas.renderAll();
-    }
+    const b = obj.getBoundingRect();
+    if (b.width < 10 && b.height < 10) return;
+    let s;
+    const st = { left: b.left, top: b.top, fill: "transparent", stroke: "white", strokeWidth: 2, selectable: true };
+    if (Math.abs(b.width - b.height) < 20) s = new fabric.Circle({ ...st, radius: Math.max(b.width, b.height) / 2 });
+    else if (b.height < 15) s = new fabric.Line([b.left, b.top + b.height / 2, b.left + b.width, b.top + b.height / 2], { ...st });
+    else s = new fabric.Rect({ ...st, width: b.width, height: b.height });
+    if (s) { canvas.remove(obj); canvas.add(s); canvas.renderAll(); }
   }
 
-  // Use reach to expose methods to parent (App.jsx)
   useImperativeHandle(ref, () => ({
-    addText(content, x, y) {
+    addText(content) {
       const canvas = fabricRef.current;
       if (!canvas) return;
       const text = new fabric.Text(content, {
-        left: x,
-        top: y,
-        fill: "#a6e3a1",
-        fontSize: 50,
-        fontFamily: "'Permanent Marker', cursive",
-        selectable: true,
+        left: canvas.getWidth() / 2, top: canvas.getHeight() / 2,
+        fill: "#a6e3a1", fontSize: 60, fontFamily: "'Rock Salt', cursive"
       });
-      canvas.add(text);
-      canvas.centerObject(text);
-      canvas.renderAll();
+      canvas.add(text); canvas.centerObject(text); canvas.renderAll();
     },
-
     clearCanvas() {
       const canvas = fabricRef.current;
       if (!canvas) return;
-      canvas.clear();
-      canvas.setBackgroundColor("#1e1e2e", () => canvas.renderAll());
+      canvas.clear(); canvas.setBackgroundColor("#1e1e2e", () => canvas.renderAll());
     },
-
-    async solveSketchMath(apiUrl) {
-      const canvas = fabricRef.current;
-      if (!canvas) return;
-
-      // Get canvas data as image
-      const dataURL = canvas.toDataURL({
-        format: "png",
-        multiplier: 1,
-      });
-
-      try {
-        const res = await fetch(`${apiUrl}/solve-sketch`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: dataURL }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-
-        // Calculate where to place the result (next to the paths)
-        const paths = canvas.getObjects().filter(o => o.type === "path");
-        let rightmost = canvas.getWidth() / 2;
-        let topMost = canvas.getHeight() / 2;
-
-        if (paths.length > 0) {
-          const group = new fabric.Group(paths);
-          const bounds = group.getBoundingRect();
-          rightmost = bounds.left + bounds.width + 25;
-          topMost = bounds.top - 10;
-          group.destroy(); // DON'T group them permanently
-        }
-
-        // Add result text in a "Shadows Into Light" messy style
-        const result = data.answer.toString();
-        const text = new fabric.Text(result, {
-          left: rightmost,
-          top: topMost,
-          fill: "#a6e3a1", // Mint green glow
-          fontSize: 80,
-          fontFamily: "'Shadows Into Light', cursive",
-          selectable: true,
-          angle: Math.random() * 6 - 3, // Slight tilt for handwritten look
-        });
-
-        canvas.add(text);
-        canvas.setActiveObject(text);
-        canvas.renderAll();
-      } catch (err) {
-        console.error("Sketch math error:", err);
-        throw err;
-      }
-    },
-
+    solveSketchMath(apiUrl) { solveSketchMathInternal(apiUrl); },
     cleanDiagram() {
       const canvas = fabricRef.current;
       if (!canvas) return;
-      const paths = canvas.getObjects().filter((o) => o.type === "path");
-      paths.forEach((p) => processPath(p));
-    },
+      const paths = canvas.getObjects().filter(o => o.type === "path");
+      paths.forEach(processPathCleanup);
+    }
   }));
 
   return (
