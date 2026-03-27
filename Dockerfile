@@ -44,6 +44,8 @@ COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 
 # Copy deployment configurations
 COPY deployment/nginx_codehost.conf /etc/nginx/conf.d/default.conf.template
+RUN rm -f /etc/nginx/sites-enabled/default
+
 COPY deployment/start_codehost.sh /start.sh
 RUN chmod +x /start.sh
 
