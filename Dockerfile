@@ -7,7 +7,8 @@ COPY frontend/ ./
 RUN npm run build
 
 # -- Phase 2: Full-stack image (Python + Nginx + MongoDB) --
-FROM python:3.10-slim
+# Using bullseye explicitly to match the MongoDB repository version and avoid GPG SHA1 rejection in newer Debian versions
+FROM python:3.10-slim-bullseye
 
 # Install core system dependencies
 RUN apt-get update && apt-get install -y \
