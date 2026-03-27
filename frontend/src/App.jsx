@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import Toolbar from "./Toolbar";
 import CanvasBoard from "./CanvasBoard";
 import SuggestionPanel from "./SuggestionPanel";
@@ -48,6 +48,59 @@ export default function App() {
     }
   };
 
+  // Keyboard Shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Do not trigger if user is typing in an input, textarea, or contenteditable
+      const target = e.target;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) {
+        return;
+      }
+
+      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      // Undo / Redo
+      if (cmdOrCtrl) {
+        if (e.key.toLowerCase() === 'z') {
+          e.preventDefault();
+          if (e.shiftKey) handleRedo(); else handleUndo();
+        } else if (e.key.toLowerCase() === 'y') {
+          e.preventDefault();
+          handleRedo();
+        }
+      } 
+      // Tool Shortcuts
+      else if (!e.shiftKey && !e.altKey && !e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case 'v': setActiveTool("select"); break;
+          case 'p': setActiveTool("pen"); break;
+          case 'r': setActiveTool("rectangle"); break;
+          case 'c': setActiveTool("circle"); break;
+          case 'a': setActiveTool("arrow"); break;
+          case 't': setActiveTool("text"); break;
+          case 'e': setActiveTool("eraser"); break;
+          default: break;
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const handleUndo = () => {
+    if (canvasRef.current && canvasRef.current.undo) {
+      canvasRef.current.undo();
+    }
+  };
+
+  const handleRedo = () => {
+    if (canvasRef.current && canvasRef.current.redo) {
+      canvasRef.current.redo();
+    }
+  };
+
   const handleClearCanvas = () => {
     if (canvasRef.current && canvasRef.current.clearCanvas) {
       canvasRef.current.clearCanvas();
@@ -56,9 +109,8 @@ export default function App() {
     }
   };
 
-  const setApiStatusTemp = (msg, duration = 2000) => {
-    setAiStatus(msg);
-    setTimeout(() => setAiStatus(null), duration);
+  const setApiStatusTemp = (msg) => {
+    setAiState({ status: "success", message: msg });
   };
 
   const [showPlaceholder, setShowPlaceholder] = useState(true);
@@ -66,7 +118,7 @@ export default function App() {
   const handleTopicSearch = async (topic) => {
     if (!topic.trim()) return;
     setLoading(true);
-    setAiState({ status: "loading", message: "Finding references..." });
+    setAiState({ status: "loading", message: "Solving..." });
     setError(null);
     try {
       const res = await fetch(`${API_URL}/topic-suggestions`, {
@@ -78,28 +130,28 @@ export default function App() {
       if (data.error) throw new Error(data.error);
       setSuggestions(data.suggestions);
       setShowSuggestions(true);
-      setAiState({ status: "success", message: "Found 3 references" });
+      setAiState({ status: "success", message: "Solved" });
     } catch (err) {
       setError("Failed to get suggestions.");
-      setAiState({ status: "error", message: "Couldn't fetch" });
+      setAiState({ status: "error", message: "Failed, retrying..." });
     } finally {
       setLoading(false);
     }
   };
 
   const handleSolveSketchStart = async () => {
-    setAiState({ status: "loading", message: "Analyzing sketch..." });
+    setAiState({ status: "loading", message: "Solving..." });
     if (canvasRef.current) {
       try {
         const count = await canvasRef.current.solveSketchMath(API_URL);
         if (count > 0) {
           setAiState({ status: "success", message: "Solved" });
         } else {
-          setAiState({ status: "error", message: "No math detected" });
+          setAiState({ status: "error", message: "Failed, retrying..." });
         }
       } catch (err) {
         console.error(err);
-        setAiState({ status: "error", message: "Couldn't process" });
+        setAiState({ status: "error", message: "Failed, retrying..." });
       }
     }
   };
@@ -121,6 +173,7 @@ export default function App() {
           brushColor={brushColor}
           brushSize={brushSize}
           onZoomChange={setZoomLevel}
+          onAiStatusChange={setAiState}
         />
       </main>
 
@@ -132,6 +185,7 @@ export default function App() {
 
       {/* ── AI Status Bubble ── */}
       <AiStatusIndicator
+        key={aiState.message + aiState.status}
         status={aiState.status}
         message={aiState.message}
         onClose={() => setAiState({ status: "idle", message: "" })}
@@ -142,9 +196,14 @@ export default function App() {
         activeTool={activeTool}
         setActiveTool={setActiveTool}
         onClearCanvas={handleClearCanvas}
-        // Undo/Redo are placeholders for now unless implemented in CanvasBoard
-        onUndo={() => {}}
-        onRedo={() => {}}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        canUndo={true}
+        canRedo={true}
+        brushColor={brushColor}
+        setBrushColor={setBrushColor}
+        brushSize={brushSize}
+        setBrushSize={setBrushSize}
       />
 
       {/* ── Bottom Right: Zoom Controls ── */}

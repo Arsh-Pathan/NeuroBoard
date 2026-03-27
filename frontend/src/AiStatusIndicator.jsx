@@ -30,20 +30,20 @@ export default function AiStatusIndicator({ status, message, onClose }) {
     if (status === "success" || status === "error") {
       const timer = setTimeout(() => {
         if (onClose) onClose();
-      }, status === "success" ? 2000 : 3500);
+      }, status === "success" ? 1500 : 3500);
       return () => clearTimeout(timer);
     }
   }, [status, onClose]);
 
   let icon, colorClass;
   if (status === "loading") {
-    icon = <SpinnerIcon />;
+    icon = <span className="ai-status-emoji">🧠</span>;
     colorClass = "ai-status-loading";
   } else if (status === "success") {
-    icon = <CheckIcon />;
+    icon = <span className="ai-status-emoji">✅</span>;
     colorClass = "ai-status-success";
   } else if (status === "error") {
-    icon = <CrossIcon />;
+    icon = <span className="ai-status-emoji">❌</span>;
     colorClass = "ai-status-error";
   }
 

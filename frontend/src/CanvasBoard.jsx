@@ -22,11 +22,14 @@ import { cachedEval, normalizeExpression, evaluateLines } from "./mathUtils";
  *  - Fade-in animation via opacity stepping
  *  - ×, ÷ symbol normalization before parsing
  */
-const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChange }, ref) => {
+const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChange, onAiStatusChange }, ref) => {
   const canvasElRef = useRef(null);
   const fabricRef = useRef(null);
   const containerRef = useRef(null);
   const drawingRef = useRef(null);
+
+  // Track the floating AI label so we can remove/update it
+  const aiStatusLabelRef = useRef(null);
 
   // Track the last result object per source IText so we can remove/replace it
   // Map<fabricObjId -> fabric.Text>
@@ -34,6 +37,11 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
 
   // Debounce timer for text:changed
   const mathDebounceRef = useRef(null);
+
+  // History Stack for Undo/Redo
+  const historyRef = useRef([]);
+  const historyIndexRef = useRef(-1);
+  const isHistoryProcessing = useRef(false);
 
   // ── Initialize fabric canvas ───────────────────────────────────────────────
   useEffect(() => {
@@ -62,29 +70,71 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
       // Skip non-IText and skip our own result objects (phantom guard)
       if (!obj || obj.type !== "i-text" || obj.__isMathResult) return;
 
-      // Debounce: 150ms window
+      // Debounce: 120ms for instant feel
       if (mathDebounceRef.current) clearTimeout(mathDebounceRef.current);
       mathDebounceRef.current = setTimeout(() => {
         handleInlineMath(canvas, obj);
-      }, 150);
+      }, 120);
     });
 
     // ── AUTO-SOLVE SKETCH (debounced 2.5s) ────────────────────────────────
     let sketchTimer = null;
     canvas.on("path:created", () => {
+      // Only auto-solve if pen tool is active
       if (sketchTimer) clearTimeout(sketchTimer);
+      
       sketchTimer = setTimeout(async () => {
         try {
           await solveSketchMathInternal("http://localhost:3001/api");
         } catch (e) {
-          console.log("Auto sketch solver: no math detected");
+          // console.log("Auto sketch solver: no math detected");
         }
-      }, 2500);
+      }, 1500); // Shorter duration for auto-scans
     });
+
+     // Initialize brush
+    canvas.freeDrawingBrush.color = brushColor;
+    canvas.freeDrawingBrush.width = brushSize;
+
+    // Save initial state for history
+    const saveState = () => {
+      if (isHistoryProcessing.current) return;
+      
+      // Prevent saving if our phantom objects are changing right now
+      // Since aiStatusLabelRef or text labels are added via code, we might want to track them anyway
+      const json = canvas.toJSON(["__isMathResult", "fontFamily", "selectable", "evented"]);
+      
+      // If we made a change, drop the 'future' redo states
+      if (historyIndexRef.current < historyRef.current.length - 1) {
+        historyRef.current = historyRef.current.slice(0, historyIndexRef.current + 1);
+      }
+      historyRef.current.push(json);
+      // Limit history size to 50 steps
+      if (historyRef.current.length > 50) {
+        historyRef.current.shift();
+      } else {
+        historyIndexRef.current = historyRef.current.length - 1;
+      }
+    };
+
+    // Delay initial save slightly to let empty canvas render
+    setTimeout(() => {
+      saveState();
+      // Attach history listeners after initial save
+      canvas.on("object:added", saveState);
+      canvas.on("object:modified", saveState);
+      canvas.on("object:removed", saveState);
+      canvas.on("path:created", saveState);
+    }, 100);
 
     return () => {
       window.removeEventListener("resize", handleResize);
       if (mathDebounceRef.current) clearTimeout(mathDebounceRef.current);
+      if (sketchTimer) clearTimeout(sketchTimer);
+      canvas.off("object:added", saveState);
+      canvas.off("object:modified", saveState);
+      canvas.off("object:removed", saveState);
+      canvas.off("path:created", saveState);
       canvas.dispose();
     };
   }, []);
@@ -95,11 +145,12 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
   // Results are stored/updated by key = "${uid}_line_${lineIndex}" so each
   // line's answer can be independently updated or removed.
   //
-  function handleInlineMath(canvas, obj) {
+  async function handleInlineMath(canvas, obj) {
     if (!obj.__uid) obj.__uid = `${Date.now()}_${Math.random()}`;
     const uid = obj.__uid;
     const rawText = obj.text;
-    const totalLines = rawText.split('\n').length;
+    const linesArr = rawText.split('\n');
+    const totalLines = linesArr.length;
 
     // Evaluate all lines independently
     const lineResults = evaluateLines(rawText);
@@ -117,41 +168,92 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     const stackBelow = (bounds.left + bounds.width + GAP + fontSize * 1.5) > canvasW - 20;
     const rightX     = bounds.left + bounds.width + GAP;
 
-    lineResults.forEach(({ lineIndex, actionable, formatted, error }) => {
-      const key = `${uid}_line_${lineIndex}`;
+    for (let i = 0; i < lineResults.length; i++) {
+        const { lineIndex, actionable, formatted, error, expression } = lineResults[i];
+        const key = `${uid}_line_${lineIndex}`;
 
-      if (!actionable || error || formatted === undefined) {
-        removeResultByKey(canvas, key);
-        return;
-      }
+        if (!actionable) {
+            removeResultByKey(canvas, key);
+            continue;
+        }
 
-      // Calculate position for this specific line
-      let resLeft, resTop, originY;
+        // If any actionable math is found (ends with =), show "Solving..." immediately
+        if (actionable) {
+            if (onAiStatusChange) {
+                onAiStatusChange({ status: "loading", message: "Solving..." });
+            }
+        }
 
-      if (stackBelow) {
-        // Stack answers horizontally below the full text block
-        resLeft = bounds.left;
-        resTop  = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
-        originY = "top";
-      } else {
-        // Place answer to the right, vertically centered on the line
-        resLeft = rightX;
-        resTop  = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
-        originY = "center";
-      }
+        // Check if we need AI fallback
+        if ((error || formatted === undefined) && expression) {
+            // Show canvas loading indicator
+            let resLeft, resTop, originY;
+            if (stackBelow) {
+                resLeft = bounds.left;
+                resTop  = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
+                originY = "top";
+            } else {
+                resLeft = rightX;
+                resTop  = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
+                originY = "center";
+            }
+            
+            const aiStatusKey = `${key}_ai_loading`;
+            placeResultAt(canvas, aiStatusKey, "🧠 Solving...", resLeft, resTop, Math.max(14, fontSize * 0.5), originY, "'Inter', sans-serif", "#3b82f6");
 
-      // Clamp to canvas
-      // Scale 1.15x of original line height, clamped 16-48
-      const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
+            try {
+                const res = await fetch(`http://localhost:3001/api/solve-math`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expression }),
+                });
+                const data = await res.json();
+                removeResultByKey(canvas, aiStatusKey);
+                
+                if (data.answer && !data.error) {
+                    const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
+                    placeResultAt(canvas, key, data.answer.toString(), resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
+                    if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
+                } else {
+                    if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
+                    // Final fallback could be a local re-eval or just silence
+                }
+            } catch (err) {
+                removeResultByKey(canvas, aiStatusKey);
+                if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
+            }
+            continue;
+        }
 
-      // Clamp to canvas
-      resLeft = Math.max(4, Math.min(resLeft, canvasW - displayFontSize * 2 - 4));
-      resTop  = Math.max(displayFontSize / 2, Math.min(resTop, canvasH - displayFontSize));
+        if (error || formatted === undefined) {
+          removeResultByKey(canvas, key);
+          continue;
+        }
 
-      placeResultAt(canvas, key, formatted, resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
-    });
+        // Local Success
+        if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
 
-    // Clean up results for lines that no longer exist (user deleted a line)
+        // Calculate position for this specific line
+        let resLeft, resTop, originY;
+
+        if (stackBelow) {
+            resLeft = bounds.left;
+            resTop  = bounds.top + bounds.height + GAP + lineIndex * (fontSize + 8);
+            originY = "top";
+        } else {
+            resLeft = rightX;
+            resTop  = bounds.top + lineIndex * lineHeightPx + lineHeightPx / 2;
+            originY = "center";
+        }
+
+        const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
+        resLeft = Math.max(4, Math.min(resLeft, canvasW - displayFontSize * 2 - 4));
+        resTop  = Math.max(displayFontSize / 2, Math.min(resTop, canvasH - displayFontSize));
+
+        placeResultAt(canvas, key, formatted, resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
+    }
+
+    // Clean up results for lines that no longer exist
     for (const key of resultMapRef.current.keys()) {
       if (!key.startsWith(`${uid}_line_`)) continue;
       const idx = parseInt(key.split('_line_')[1], 10);
@@ -160,14 +262,14 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
   }
 
   // ── Place or Replace a Result Object at an exact canvas position ───────────
-  function placeResultAt(canvas, key, formatted, left, top, fontSize, originY = "center", fontFamily = "'Kalam', 'Rock Salt', cursive") {
+  function placeResultAt(canvas, key, formatted, left, top, fontSize, originY = "center", fontFamily = "'Kalam', 'Rock Salt', cursive", color = "#10b981") {
     removeResultByKey(canvas, key);
 
     const resText = new fabric.Text(formatted, {
       left,
       top,
       fontSize,
-      fill: "#10b981", // Success green (light theme context)
+      fill: color, 
       fontFamily: fontFamily,
       selectable: true,
       evented: true,
@@ -245,6 +347,40 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
   }
 
 
+  // ── AI Status Utility ────────────────────────────────────────────────────────
+  function showCanvasAiStatus(text) {
+    if (aiStatusLabelRef.current) {
+      fabricRef.current.remove(aiStatusLabelRef.current);
+    }
+    const label = new fabric.Text(text, {
+      left: 20,
+      top: 20,
+      fontSize: 20,
+      fill: "#3b82f6",
+      fontFamily: "'Outfit', sans-serif",
+      fontWeight: 600,
+      selectable: false,
+      evented: false,
+      opacity: 0,
+    });
+    aiStatusLabelRef.current = label;
+    fabricRef.current.add(label);
+    animateFadeIn(fabricRef.current, label, 200);
+
+    if (onAiStatusChange) {
+      onAiStatusChange({ status: "loading", message: text });
+    }
+  }
+
+  function hideCanvasAiStatus() {
+    if (aiStatusLabelRef.current) {
+      fabricRef.current.remove(aiStatusLabelRef.current);
+      aiStatusLabelRef.current = null;
+    }
+    // We don't call onAiStatusChange to idle here because of the indicator's auto-hide logic
+  }
+
+
   // ── AI Sketch Solver ──────────────────────────────────────────────────────
   async function solveSketchMathInternal(apiUrl) {
     const canvas = fabricRef.current;
@@ -265,13 +401,23 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     });
     
     const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    if (data.error) {
+      if (onAiStatusChange) onAiStatusChange({ status: "error", message: "Failed, retrying..." });
+      throw new Error(data.error);
+    }
 
-      if (data.answer && Array.isArray(data.answer) && data.answer.length > 0) {
-        // ── Smart placement: cluster strokes into lines ──────
-        const drawnObjects = canvas.getObjects().filter(
-          (o) => !o.__isMathResult && o !== status && o.type !== "i-text"
-        );
+    if (data.answer && Array.isArray(data.answer) && data.answer.length > 0) {
+      // ── Math DETECTED: Show visual feedback ──
+      showCanvasAiStatus("🧠 Solving...");
+      if (onAiStatusChange) onAiStatusChange({ status: "success", message: "Solved" });
+
+      // Quick delay to let the user see the "AI solving" state before results appear
+      await new Promise(r => setTimeout(r, 450));
+      hideCanvasAiStatus();
+      // ── Smart placement: cluster strokes into lines ──────
+      const drawnObjects = canvas.getObjects().filter(
+        (o) => !o.__isMathResult && o !== aiStatusLabelRef.current && o.type !== "i-text"
+      );
 
         const lines = [];
         drawnObjects.forEach((o) => {
@@ -489,6 +635,32 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
 
   // ── Imperative API ────────────────────────────────────────────────────────
   useImperativeHandle(ref, () => ({
+    undo() {
+      if (historyIndexRef.current > 0) {
+        historyIndexRef.current--;
+        const json = historyRef.current[historyIndexRef.current];
+        const canvas = fabricRef.current;
+        isHistoryProcessing.current = true;
+        canvas.clear();
+        canvas.loadFromJSON(json, () => {
+          canvas.renderAll();
+          isHistoryProcessing.current = false;
+        });
+      }
+    },
+    redo() {
+      if (historyIndexRef.current < historyRef.current.length - 1) {
+        historyIndexRef.current++;
+        const json = historyRef.current[historyIndexRef.current];
+        const canvas = fabricRef.current;
+        isHistoryProcessing.current = true;
+        canvas.clear();
+        canvas.loadFromJSON(json, () => {
+          canvas.renderAll();
+          isHistoryProcessing.current = false;
+        });
+      }
+    },
     /**
      * addText — places a text label on canvas at a smart position.
      * Optionally accepts (content, x, y) to position explicitly.
