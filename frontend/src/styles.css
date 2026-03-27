@@ -269,14 +269,15 @@ body {
 
 /* Bottom Bar (Math Solver) */
 .footer {
-  height: 80px;
+  min-height: 70px;
   background: var(--panel);
   border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 20px;
+  padding: 10px 20px;
   flex-shrink: 0;
   z-index: 10;
+  overflow: visible; /* allow preview badges to float above */
 }
 
 .math-solver {
@@ -302,6 +303,49 @@ body {
   display: flex;
   flex: 1;
   gap: 12px;
+  align-items: center;
+}
+
+/* Live preview area — shows below input, one badge per solved line */
+.math-preview-area {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.math-preview-badge {
+  background: rgba(166, 227, 161, 0.13);
+  color: var(--success);
+  border: 1px solid rgba(166, 227, 161, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: "Outfit", monospace;
+  padding: 2px 10px;
+  white-space: nowrap;
+  animation: mathPreviewIn 0.18s ease;
+  backdrop-filter: blur(4px);
+}
+
+.math-preview-badge strong {
+  color: #c9f7c5;
+  font-weight: 800;
+}
+
+@keyframes mathPreviewIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Textarea variant for multi-line math input */
+.math-textarea {
+  padding-right: 18px !important;  /* no badge inside textarea */
+  font-family: "Outfit", monospace !important;
+  font-size: 13px !important;
 }
 
 .math-input, .topic-input {

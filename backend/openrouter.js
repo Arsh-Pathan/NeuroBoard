@@ -52,12 +52,13 @@ async function solveImageMath(base64Image) {
           Return a JSON array of objects with: 
           - 'expr': the full expression (e.g., '2+2=')
           - 'ans': the numerical result (e.g., '4')
-          - 'x': horizontal percentage (0 to 100) exactly where the answer should be placed (about 5-10% to the right of the expression's end)
-          - 'y': vertical percentage (0 to 100) that aligns horizontally with the center of the expression
-          - 'angle': angle of the expression in degrees (e.g., 5 if slanted down)
+          - 'x_end': horizontal percentage (0 to 100) of the RIGHTMOST PIXEL of the expression (the end of the '=').
+          - 'y_center': vertical percentage (0 to 100) exactly at the vertical center of the '=' sign.
+          - 'height_pct': vertical height of the tallest character in the handwriting as percentage (0 to 100).
+          - 'angle': angle of the expression in degrees.
           
-          VERY IMPORTANT: Be extremely precise with 'y' to align with the text.
-          Return ONLY valid JSON array. Output: [{"expr":"...","ans":"...","x":0,"y":0,"angle":0}]`,
+          CRITICAL: Do not include trailing whitespace in 'x_end'. It must be the last visible pixel. 
+          Return ONLY valid JSON array. Output: [{"expr":"...","ans":"...","x_end":0,"y_center":0,"height_pct":0,"angle":0}]`,
         },
         {
           type: "image_url",
