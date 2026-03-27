@@ -6,10 +6,10 @@ RUN npm install
 COPY frontend/ ./
 RUN npm run build
 
-# -- Phase 2: Python backend + Nginx final production image --
+# -- Phase 2: Full-stack image (Python + Nginx + MongoDB) --
 FROM python:3.10-slim
 
-# Install system dependencies for OCR, OpenCV and Nginx
+# Install core system dependencies
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -17,6 +17,16 @@ RUN apt-get update && apt-get install -y \
     gettext-base \
     nginx \
     procps \
+    curl \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install local MongoDB to make the project "self-sustained"
+RUN curl -fsSL https://www.mongodb.org/static/pgp/server-7.0.asc | \
+   gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
+RUN echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] http://repo.mongodb.org/apt/debian bullseye/mongodb-org/7.0 main" | \
+   tee /etc/apt/sources.list.d/mongodb-org-7.0.list
+RUN apt-get update && apt-get install -y mongodb-org-server \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -35,6 +45,9 @@ COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
 COPY deployment/nginx_codehost.conf /etc/nginx/conf.d/default.conf.template
 COPY deployment/start_codehost.sh /start.sh
 RUN chmod +x /start.sh
+
+# Pre-create MongoDB data directory
+RUN mkdir -p /data/db && chown -R www-data:www-data /data/db
 
 # CodeHost assigns a dynamic PORT via environment variable
 ENV PORT=80

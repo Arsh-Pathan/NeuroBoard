@@ -43,7 +43,7 @@ Current structure consists of:
 - CodeHost is optimized for student projects. To deploy:
 - 1. Create a ZIP of the root directory (ensure the `Dockerfile` is at the root).
 - 2. Upload the ZIP to the [CodeHost Dashboard](https://code-host.online/dashboard).
-- 3. In **Settings**, ensure you set the `MONGO_URI` environment variable to your production database (e.g., MongoDB Atlas).
+- 3. **Note:** The project is now **self-sustained**. It includes its own local MongoDB instance, so you do **not** need to set `MONGO_URI` (though you still can if you want an external DB).
 - 4. CodeHost will automatically detect the root `Dockerfile` and build the entire stack.
 
 ### API Documentation
