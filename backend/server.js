@@ -22,7 +22,7 @@ app.post("/api/solve-math", async (req, res) => {
       return res.status(400).json({ error: "Expression is required" });
     }
     const answer = await solveMath(expression);
-    res.json({ expression, answer });
+    res.json(answer);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -34,7 +34,7 @@ app.post("/api/solve-sketch", async (req, res) => {
     const { image } = req.body;
     if (!image) return res.status(400).json({ error: "Image data is required" });
     const answer = await solveImageMath(image);
-    res.json({ answer });
+    res.json(answer);
   } catch (err) {
     console.error("Sketch solver error:", err.message);
     res.status(500).json({ error: `API Error: ${err.message}` });

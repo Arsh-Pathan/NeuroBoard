@@ -267,7 +267,13 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
     const data = await res.json();
     if (data.error) throw new Error(data.error);
 
-      if (data.answer && Array.isArray(data.answer) && data.answer.length > 0) {
+      const answers = Array.isArray(data.solution)
+        ? data.solution
+        : Array.isArray(data.answer)
+          ? data.answer
+          : [];
+
+      if (answers.length > 0) {
         // ── Smart placement: cluster strokes into lines ──────
         const drawnObjects = canvas.getObjects().filter(
           (o) => !o.__isMathResult && o !== status && o.type !== "i-text"
@@ -303,7 +309,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
         const canvasW = canvas.getWidth();
         const canvasH = canvas.getHeight();
 
-        data.answer.forEach((item, index) => {
+        answers.forEach((item, index) => {
           const lineBox = lines[index] || lines[lines.length - 1];
           const exprHeight = lineBox.maxY - lineBox.minY;
           
@@ -324,11 +330,14 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChang
           ansTop = Math.max(displayFontSize / 2 + 4, Math.min(ansTop, canvasH - displayFontSize - 4));
 
           const key = `sketch_line_${Date.now()}_${index}`;
-          placeResultAt(canvas, key, item.ans.toString(), ansLeft, ansTop, displayFontSize, ansOriginY);
+          const answerText = typeof item === "object"
+            ? (item.ans || item.value || JSON.stringify(item))
+            : item;
+          placeResultAt(canvas, key, String(answerText), ansLeft, ansTop, displayFontSize, ansOriginY);
         });
         
         canvas.renderAll();
-        return data.answer.length;
+        return answers.length;
       }
       return 0; // No math detected
   }
