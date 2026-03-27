@@ -64,8 +64,54 @@ export default function CanvasBoard() {
       })
     }
     
-    // Additional logic for generating shapes when user clicks & drags could be added here
-    // e.g., tracking mouse down/move/up for shapes
+    // AI Magic Implementation
+    const handleAIAction = async () => {
+      if (!canvas) return
+      
+      // Get base64 image of the current viewport
+      const dataUrl = canvas.toDataURL({
+        format: 'png',
+        quality: 0.8
+      })
+
+      try {
+        const { aiService } = await import('../services/aiService')
+        
+        // Example: Run math solver by default for AI Magic tool
+        const result = await aiService.solveMath(dataUrl)
+        
+        if (result.solution) {
+           // Display result on canvas
+           const text = new fabric.IText(`${result.equation} = ${result.solution}`, {
+             left: 100,
+             top: 100,
+             fontSize: 30,
+             fill: '#4f46e5',
+             backgroundColor: '#f5f3ff',
+             padding: 10
+           })
+           canvas.add(text)
+           canvas.setActiveObject(text)
+           canvas.renderAll()
+        } else if (result.error) {
+           console.warn('AI Math Error:', result.error)
+        }
+      } catch (err) {
+        console.error('AI Action Failed:', err)
+      }
+    }
+
+    const onMouseUp = () => {
+      if (activeTool === 'ai') {
+        handleAIAction()
+      }
+    }
+
+    canvas.on('mouse:up', onMouseUp)
+
+    return () => {
+      canvas.off('mouse:up', onMouseUp)
+    }
 
   }, [activeTool, brushColor, brushSize])
 

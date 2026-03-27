@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type Tool = 'select' | 'pen' | 'rectangle' | 'circle' | 'arrow' | 'text' | 'eraser'
+export type Tool = 'select' | 'pen' | 'rectangle' | 'circle' | 'arrow' | 'text' | 'eraser' | 'ai'
 
 interface CanvasState {
   activeTool: Tool

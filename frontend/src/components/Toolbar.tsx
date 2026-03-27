@@ -6,7 +6,8 @@ import {
   Circle,
   MoveUpRight,
   Type,
-  Eraser
+  Eraser,
+  Sparkles
 } from 'lucide-react'
 import { useCanvasStore, Tool } from '../state/canvasStore'
 
@@ -18,6 +19,7 @@ const tools = [
   { id: 'arrow', icon: MoveUpRight, label: 'Arrow' },
   { id: 'text', icon: Type, label: 'Text' },
   { id: 'eraser', icon: Eraser, label: 'Eraser' },
+  { id: 'ai', icon: Sparkles, icon_color: 'text-purple-600', label: 'AI Magic' },
 ]
 
 export default function Toolbar() {
