@@ -22,7 +22,7 @@ import { cachedEval, normalizeExpression, evaluateLines } from "./mathUtils";
  *  - Fade-in animation via opacity stepping
  *  - ×, ÷ symbol normalization before parsing
  */
-const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
+const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize, onZoomChange }, ref) => {
   const canvasElRef = useRef(null);
   const fabricRef = useRef(null);
   const containerRef = useRef(null);
@@ -43,7 +43,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
     const canvas = new fabric.Canvas(canvasElRef.current, {
       width: container.offsetWidth,
       height: container.offsetHeight,
-      backgroundColor: "#1e1e2e",
+      backgroundColor: "transparent",
       selection: true,
     });
     fabricRef.current = canvas;
@@ -141,10 +141,14 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
       }
 
       // Clamp to canvas
-      resLeft = Math.max(4, Math.min(resLeft, canvasW - fontSize * 2 - 4));
-      resTop  = Math.max(fontSize / 2, Math.min(resTop, canvasH - fontSize));
+      // Scale 1.15x of original line height, clamped 16-48
+      const displayFontSize = Math.max(16, Math.min(48, fontSize * 1.15));
 
-      placeResultAt(canvas, key, formatted, resLeft, resTop, fontSize, originY);
+      // Clamp to canvas
+      resLeft = Math.max(4, Math.min(resLeft, canvasW - displayFontSize * 2 - 4));
+      resTop  = Math.max(displayFontSize / 2, Math.min(resTop, canvasH - displayFontSize));
+
+      placeResultAt(canvas, key, formatted, resLeft, resTop, displayFontSize, originY, obj.fontFamily || "'Inter', sans-serif");
     });
 
     // Clean up results for lines that no longer exist (user deleted a line)
@@ -156,24 +160,47 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
   }
 
   // ── Place or Replace a Result Object at an exact canvas position ───────────
-  function placeResultAt(canvas, key, formatted, left, top, fontSize, originY = "center") {
+  function placeResultAt(canvas, key, formatted, left, top, fontSize, originY = "center", fontFamily = "'Kalam', 'Rock Salt', cursive") {
     removeResultByKey(canvas, key);
 
     const resText = new fabric.Text(formatted, {
       left,
       top,
       fontSize,
-      fill: "#a6e3a1",
-      fontFamily: "'Rock Salt', cursive",
+      fill: "#10b981", // Success green (light theme context)
+      fontFamily: fontFamily,
       selectable: true,
       evented: true,
       opacity: 0,
+      scaleX: 0.95,
+      scaleY: 0.95,
       originX: "left",
       originY,
-      shadow: "rgba(0,0,0,0.5) 2px 2px 6px",
+      shadow: "rgba(0,0,0,0.1) 1px 1px 2px",
       __isMathResult: true,
       __resultKey: key,
     });
+
+    // Simple Overlap Avoidance (shifts right if colliding with drawing objects)
+    const padding = 12;
+    let collisions = 0;
+    while (collisions < 5) {
+      resText.setCoords();
+      const b = resText.getBoundingRect(true);
+      const isOverlapping = canvas.getObjects().some(obj => {
+         if (obj.__isMathResult || obj.type === "i-text") return false;
+         const ob = obj.getBoundingRect(true);
+         return !(
+            b.left + b.width + padding < ob.left ||
+            ob.left + ob.width + padding < b.left ||
+            b.top + b.height + padding < ob.top ||
+            ob.top + ob.height + padding < b.top
+         );
+      });
+      if (!isOverlapping) break;
+      resText.set({ left: resText.left + 24 });
+      collisions++;
+    }
 
     canvas.add(resText);
     animateFadeIn(canvas, resText, 200);
@@ -206,8 +233,12 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
     let step = 0;
     const interval = setInterval(() => {
       step++;
-      const opacity = step / steps;
-      obj.set("opacity", Math.min(1, opacity));
+      const progress = step / steps;
+      obj.set({
+        opacity: Math.min(0.9, progress),
+        scaleX: 0.95 + (0.05 * progress),
+        scaleY: 0.95 + (0.05 * progress)
+      });
       canvas.renderAll();
       if (step >= steps) clearInterval(interval);
     }, stepMs);
@@ -225,133 +256,81 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
       .filter((o) => o.type === "i-text" && (!o.text.trim() || o.text === "Type Here"))
       .forEach((o) => canvas.remove(o));
 
-    // Status indicator
-    const status = new fabric.Text("🧠 AI Solving...", {
-      left: canvas.getWidth() / 2,
-      top: 20,
-      fontSize: 16,
-      fill: "#a6e3a1",
-      fontFamily: "Outfit",
-      selectable: false,
-      originX: "center",
-      backgroundColor: "rgba(0,0,0,0.4)",
-      padding: 8,
-      __isMathResult: true,
-    });
-    canvas.add(status);
-    canvas.renderAll();
-
     const dataURL = canvas.toDataURL({ format: "png", quality: 0.8, multiplier: 2 });
 
-    try {
-      const res = await fetch(`${apiUrl}/solve-sketch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: dataURL }),
-      });
-      const data = await res.json();
-      canvas.remove(status);
-
-      if (data.error) throw new Error(data.error);
+    const res = await fetch(`${apiUrl}/solve-sketch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: dataURL }),
+    });
+    
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
 
       if (data.answer && Array.isArray(data.answer) && data.answer.length > 0) {
-        // ── Smart placement: measure actual drawn content bounding box ──────
-        // Ignore any existing result/UI objects so we only measure user strokes
+        // ── Smart placement: cluster strokes into lines ──────
         const drawnObjects = canvas.getObjects().filter(
-          (o) => !o.__isMathResult && o !== status
+          (o) => !o.__isMathResult && o !== status && o.type !== "i-text"
         );
 
-        // Compute the union bounding box of all drawn objects
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        const lines = [];
         drawnObjects.forEach((o) => {
-          const b = o.getBoundingRect(true); // true = include stroke width
-          if (b.left < minX) minX = b.left;
-          if (b.top < minY) minY = b.top;
-          if (b.left + b.width > maxX) maxX = b.left + b.width;
-          if (b.top + b.height > maxY) maxY = b.top + b.height;
+          const b = o.getBoundingRect(true);
+          const centerY = b.top + b.height / 2;
+          
+          let foundLine = lines.find(l => Math.abs(l.centerY - centerY) < 40);
+          if (foundLine) {
+            foundLine.minX = Math.min(foundLine.minX, b.left);
+            foundLine.minY = Math.min(foundLine.minY, b.top);
+            foundLine.maxX = Math.max(foundLine.maxX, b.left + b.width);
+            foundLine.maxY = Math.max(foundLine.maxY, b.top + b.height);
+            foundLine.centerY = (foundLine.minY + foundLine.maxY) / 2;
+          } else {
+            lines.push({
+              minX: b.left, minY: b.top, maxX: b.left + b.width, maxY: b.top + b.height,
+              centerY: centerY
+            });
+          }
         });
 
-        // Fallback if nothing drawn yet (shouldn't happen, but just in case)
-        if (!isFinite(minX)) { minX = 50; minY = 50; maxX = 200; maxY = 100; }
+        lines.sort((a, b) => a.centerY - b.centerY);
 
-        const exprHeight = maxY - minY;
-        const exprCenterY = (minY + maxY) / 2;
+        if (lines.length === 0) {
+          lines.push({ minX: 50, minY: 50, maxX: 200, maxY: 100, centerY: 75 });
+        }
 
-        // Font size based on actual drawing height — clamped min 20, max 100
-        const fontSize = Math.max(20, Math.min(100, exprHeight * 0.85));
-
-        const GAP = 28; // gap between expression end and answer start
+        const GAP = 16;
         const canvasW = canvas.getWidth();
         const canvasH = canvas.getHeight();
 
-        // Default: place answer immediately to the RIGHT of the expression
-        let ansLeft = maxX + GAP;
-        let ansTop = exprCenterY;
-        let ansOriginY = "center";
+        data.answer.forEach((item, index) => {
+          const lineBox = lines[index] || lines[lines.length - 1];
+          const exprHeight = lineBox.maxY - lineBox.minY;
+          
+          // Size: ~1.2x of expression height, clamped between 16 and 48px
+          const displayFontSize = Math.max(16, Math.min(48, exprHeight * 1.2));
+          
+          let ansLeft = lineBox.maxX + GAP;
+          let ansTop = lineBox.centerY;
+          let ansOriginY = "center";
+          
+          // Clamp to right edge or wrap
+          const estimatedAnswerW = displayFontSize * 1.5;
+          if (ansLeft + estimatedAnswerW > canvasW - 20) {
+            ansLeft = lineBox.minX;
+            ansTop = lineBox.maxY + GAP;
+            ansOriginY = "top";
+          }
+          ansTop = Math.max(displayFontSize / 2 + 4, Math.min(ansTop, canvasH - displayFontSize - 4));
 
-        // If placing to the right would overflow the canvas, drop BELOW instead
-        const estimatedAnswerW = fontSize * 1.2; // conservative 1-char width estimate
-        if (ansLeft + estimatedAnswerW > canvasW - 20) {
-          ansLeft = minX;
-          ansTop = maxY + GAP;
-          ansOriginY = "top";
-        }
-
-        // Clamp vertically
-        ansTop = Math.max(fontSize / 2 + 4, Math.min(ansTop, canvasH - fontSize - 4));
-
-        data.answer.forEach((item) => {
-          const marker = new fabric.Text(item.ans.toString(), {
-            left: ansLeft,
-            top: ansTop,
-            fill: "#a6e3a1",
-            fontSize,
-            fontFamily: "'Rock Salt', cursive",
-            selectable: true,
-            originX: "left",
-            originY: ansOriginY,
-            shadow: "rgba(0,0,0,0.55) 2px 2px 7px",
-            opacity: 0,
-            __isMathResult: true,
-          });
-          canvas.add(marker);
-          animateFadeIn(canvas, marker, 250);
-
-          // Shift right for any subsequent answers (multiple expressions on canvas)
-          ansLeft += marker.getBoundingRect().width + GAP;
+          const key = `sketch_line_${Date.now()}_${index}`;
+          placeResultAt(canvas, key, item.ans.toString(), ansLeft, ansTop, displayFontSize, ansOriginY);
         });
-      } else {
-        const noMath = new fabric.Text("❓ No Math Detected", {
-          left: canvas.getWidth() / 2,
-          top: 20,
-          fontSize: 16,
-          fill: "#f38ba8",
-          fontFamily: "Outfit",
-          selectable: false,
-          originX: "center",
-          __isMathResult: true,
-        });
-        canvas.add(noMath);
-        setTimeout(() => { canvas.remove(noMath); canvas.renderAll(); }, 3000);
+        
+        canvas.renderAll();
+        return data.answer.length;
       }
-      canvas.renderAll();
-    } catch (err) {
-      canvas.remove(status);
-      console.error("Sketch solver error:", err);
-      const errorBanner = new fabric.Text("❌ Error: Check AI Key", {
-        left: canvas.getWidth() / 2,
-        top: 20,
-        fontSize: 16,
-        fill: "white",
-        backgroundColor: "#f38ba8",
-        padding: 10,
-        selectable: false,
-        originX: "center",
-        __isMathResult: true,
-      });
-      canvas.add(errorBanner);
-      setTimeout(() => { canvas.remove(errorBanner); canvas.renderAll(); }, 4000);
-    }
+      return 0; // No math detected
   }
 
   // ── Tool / Brush Effect ───────────────────────────────────────────────────
@@ -370,13 +349,16 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
       case "select":
         canvas.selection = true;
         canvas.forEachObject((o) => (o.selectable = true));
+        canvas.defaultCursor = "default";
         break;
       case "pen":
         canvas.isDrawingMode = true;
         canvas.freeDrawingBrush.color = brushColor;
         canvas.freeDrawingBrush.width = brushSize * 1.5;
+        canvas.defaultCursor = "crosshair";
         break;
       case "eraser":
+        canvas.defaultCursor = "not-allowed";
         canvas.on("mouse:down", (opt) => {
           const target = canvas.findTarget(opt.e);
           if (target) {
@@ -394,6 +376,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
         });
         break;
       case "text":
+        canvas.defaultCursor = "text";
         canvas.on("mouse:down", (opt) => {
           const pointer = canvas.getPointer(opt.e);
           const iText = new fabric.IText("Type Here", {
@@ -412,6 +395,7 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
       case "rectangle":
       case "circle":
       case "arrow":
+        canvas.defaultCursor = "crosshair";
         canvas.on("mouse:down", handleShapeStart);
         canvas.on("mouse:move", handleShapeMove);
         canvas.on("mouse:up", handleShapeEnd);
@@ -535,11 +519,29 @@ const CanvasBoard = forwardRef(({ activeTool, brushColor, brushSize }, ref) => {
       if (!canvas) return;
       resultMapRef.current.clear();
       canvas.clear();
-      canvas.setBackgroundColor("#1e1e2e", () => canvas.renderAll());
+      canvas.setBackgroundColor("transparent", () => canvas.renderAll());
+    },
+
+    zoomCanvas(direction) {
+      const canvas = fabricRef.current;
+      if (!canvas) return;
+      let zoom = canvas.getZoom();
+      if (direction === "in") zoom *= 1.2;
+      else if (direction === "out") zoom /= 1.2;
+      else if (direction === "reset") zoom = 1;
+      
+      // Keep scaling bounded
+      zoom = Math.max(0.2, Math.min(zoom, 5));
+      canvas.zoomToPoint(new fabric.Point(canvas.getWidth() / 2, canvas.getHeight() / 2), zoom);
+      canvas.renderAll();
+
+      if (onZoomChange) {
+        onZoomChange(Math.round(zoom * 100));
+      }
     },
 
     solveSketchMath(apiUrl) {
-      solveSketchMathInternal(apiUrl);
+      return solveSketchMathInternal(apiUrl);
     },
 
     cleanDiagram() {
