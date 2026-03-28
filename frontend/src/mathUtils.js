@@ -40,10 +40,10 @@ export function normalizeExpression(raw) {
     .replace(/\{/g, "(").replace(/\}/g, ")")
     .replace(/\[/g, "(").replace(/\]/g, ")");
 
-  // 3. Remove characters that are entirely invalid (letters except 'e' for scientific)
-  //    Allow digits, operators, parens, dot, whitespace, ^
-  //    'e'/'E' is kept for numbers like 1e3
+  // 3. Remove characters that are entirely invalid (except x as a variable/shorthand)
   s = s.replace(/[^0-9+\-*/.^()\seE]/g, "");
+  // Quick shorthand for 5x -> 5*x (limited to x as a variable)
+  s = s.replace(/(\d)\s*x/g, "$1*x");
 
   // 4. Collapse whitespace
   s = s.replace(/\s+/g, " ").trim();
@@ -227,10 +227,46 @@ class Parser {
  *  - Cap at 10 significant digits to avoid float noise (0.1+0.2 → 0.3)
  */
 function formatResult(num) {
+  if (num === null || num === undefined) return "0";
+  // Always return numeric '0' for non-finite results to satisfy numeric-only requirement
+  if (!isFinite(num)) return "0";
+  
   if (Number.isInteger(num)) return num.toString();
-  // Round to 10 sig figs to kill float noise, then trim trailing zeros
-  const rounded = parseFloat(num.toPrecision(10));
-  return rounded.toString();
+  // Round to 3 decimal places and trim trailing zeros
+  const rounded = Math.round(num * 1000) / 1000;
+  return parseFloat(rounded.toFixed(3)).toString();
+}
+
+/**
+ * cleanMathOutput — Strip LaTeX symbols and delimiters for a clean display.
+ */
+export function cleanMathOutput(text) {
+  if (!text) return "";
+  let s = text.toString();
+  
+  // Remove markdown and LaTeX delimiters
+  s = s.replace(/\$+([^\$]+)\$+/g, "$1")
+       .replace(/\$+/g, "")
+       .replace(/\\\[|\\\]|\\\(|\\\)/g, "");
+
+  // Normalize common LaTeX functions to plain math
+  s = s.replace(/\\sin\b/g, "sin")
+       .replace(/\\cos\b/g, "cos")
+       .replace(/\\tan\b/g, "tan")
+       .replace(/\\log\b/g, "log")
+       .replace(/\\ln\b/g, "ln")
+       .replace(/\\sqrt\{([^\}]+)\}/g, "sqrt($1)")
+       .replace(/\\sqrt/g, "sqrt")
+       .replace(/\\frac\{([^\}]+)\}\{([^\}]+)\}/g, "($1)/($2)")
+       .replace(/\\left[\[\(\{\|]/g, (m) => m.slice(-1))
+       .replace(/\\right[\]\)\}\|]/g, (m) => m.slice(-1))
+       .replace(/\\cdot/g, "*")
+       .replace(/\\times/g, "*")
+       .replace(/\\div/g, "/")
+       .replace(/\\pi/gi, "pi")
+       .replace(/\\/g, ""); // Final slash cleanup
+
+  return s.trim();
 }
 
 /**

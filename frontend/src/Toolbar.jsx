@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 
 // Inline SVGs for minimalist look
 const icons = {
@@ -21,9 +21,13 @@ const icons = {
       <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
     </svg>
   ),
-  diamond: (
+  palette: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 2l10 10-10 10L2 12 12 2z"/>
+      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
+      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
+      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
+      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
+      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.992 6.012 17.5 2 12 2z" />
     </svg>
   ),
   circle: (
@@ -80,12 +84,12 @@ const toolGroups = [
   ],
   [
     { id: "rectangle", label: "Rectangle (R)", type: "tool" },
-    { id: "diamond", label: "Diamond (D)", type: "tool" },
     { id: "circle", label: "Circle (O)", type: "tool" },
     { id: "arrow", label: "Arrow (A)", type: "tool" }
   ],
   [
     { id: "text", label: "Text (T)", type: "tool" },
+    { id: "palette", label: "Color & Stroke", type: "action" },
     { id: "trash", label: "Clear Canvas", type: "action" }
   ]
 ];
@@ -97,8 +101,31 @@ export default function Toolbar({
   onRedo,
   onClearCanvas,
   canUndo = false,
-  canRedo = false
+  canRedo = false,
+  brushColor = "#1e293b",
+  setBrushColor,
+  brushSize = 3,
+  setBrushSize
 }) {
+  const [showSettings, setShowSettings] = useState(false);
+  const settingsRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (settingsRef.current && !settingsRef.current.contains(event.target) && !event.target.closest('.palette-btn')) {
+        setShowSettings(false);
+      }
+    }
+    if (showSettings) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showSettings]);
+
+  const presetColors = [
+    "#1e293b", "#ef4444", "#f59e0b", "#10b981", "#3b82f6", "#8b5cf6", "#ec4899", "#ffffff"
+  ];
+
   return (
     <div className="floating-toolbars-container">
       {/* ── Main Tool Dock ── */}
@@ -108,10 +135,11 @@ export default function Toolbar({
             {group.map((tool) => (
               <button
                 key={tool.id}
-                className={`tool-btn ${activeTool === tool.id && tool.type === "tool" ? "active" : ""}`}
+                className={`tool-btn ${tool.id === "palette" ? "palette-btn" : ""} ${activeTool === tool.id && tool.type === "tool" ? "active" : ""} ${tool.id === "palette" && showSettings ? "active" : ""}`}
                 onClick={() => {
                   if (tool.type === "tool") setActiveTool(tool.id);
                   else if (tool.id === "trash" && onClearCanvas) onClearCanvas();
+                  else if (tool.id === "palette") setShowSettings(!showSettings);
                 }}
                 data-tooltip={tool.label}
               >
@@ -122,8 +150,38 @@ export default function Toolbar({
         ))}
       </div>
 
+      {/* ── Settings Popover ── */}
+      {showSettings && (
+        <div className="settings-popover glass-panel" ref={settingsRef}>
+          <div className="settings-section">
+            <label>Color</label>
+            <div className="color-grid">
+              {presetColors.map(c => (
+                <button
+                  key={c}
+                  className={`color-swatch ${brushColor === c ? 'active' : ''}`}
+                  style={{ backgroundColor: c }}
+                  onClick={() => { if (setBrushColor) setBrushColor(c); }}
+                />
+              ))}
+            </div>
+          </div>
+          <div className="settings-section">
+            <label>Stroke Size: <span>{brushSize}px</span></label>
+            <input 
+              type="range" 
+              className="stroke-slider" 
+              min="1" 
+              max="10" 
+              value={brushSize}
+              onChange={(e) => { if (setBrushSize) setBrushSize(parseInt(e.target.value)); }}
+            />
+          </div>
+        </div>
+      )}
+
       {/* ── Undo / Redo Panel ── */}
-      <div className="floating-toolbar glass-panel" style={{ flexDirection: "row", padding: "8px 10px", gap: "8px" }}>
+      <div className="floating-toolbar glass-panel">
         <button 
           className="tool-btn" 
           onClick={onUndo} 

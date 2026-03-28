@@ -80,14 +80,24 @@ export default function MathSolver({ onSolve, onSolveSketch, apiUrl, setError })
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
-        const displayAnswer = data.solution
-          ? (Array.isArray(data.solution) ? data.solution.join(", ") : data.solution)
-          : data.answer;
-        onSolve(`${data.expression} = ${displayAnswer}`);
+
+        // Handle the new structured 'results' or legacy 'solution'
+        if (data.results && data.results.length > 0) {
+          data.results.forEach(({ expression: lineExpr, solution: lineSol }) => {
+            const solText = Array.isArray(lineSol) ? lineSol[0] : lineSol;
+            onSolve(`${lineExpr} = ${solText || "0"}`);
+          });
+        } else {
+          const displayAnswer = data.solution
+            ? (Array.isArray(data.solution) ? data.solution.join(", ") : data.solution)
+            : (data.answer || "0");
+          onSolve(`${data.expression || expr} = ${displayAnswer}`);
+        }
+
         setMathInput("");
         setPreviews([]);
       } catch (err) {
-        setError("Could not solve. Check backend/OpenRouter key.");
+        setError("Could not solve. Check your inputs or API key.");
         console.error(err);
       } finally {
         setLoading(false);

@@ -37,6 +37,7 @@ app.post("/api/solve-sketch", async (req, res) => {
     res.json(answer);
   } catch (err) {
     console.error("Sketch solver error:", err.message);
+    console.error(err.stack);
     res.status(500).json({ error: `API Error: ${err.message}` });
   }
 });

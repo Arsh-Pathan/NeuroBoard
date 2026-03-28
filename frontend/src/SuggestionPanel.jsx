@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { cleanMathOutput } from "./mathUtils";
 
 export default function SuggestionPanel({ suggestions, onSearch, loading }) {
   const [topic, setTopic] = useState("");
@@ -48,8 +49,8 @@ export default function SuggestionPanel({ suggestions, onSearch, loading }) {
           <div key={idx} className="suggestion-card">
             <div className="card-number">{idx + 1}</div>
             <div className="card-content">
-              <div className="card-title">{suggestion.title}</div>
-              <div className="card-desc text-xs text-slate-500 mt-1">{suggestion.description}</div>
+              <div className="card-title">{cleanMathOutput(suggestion.title)}</div>
+              <div className="card-desc text-xs text-slate-500 mt-1">{cleanMathOutput(suggestion.description)}</div>
             </div>
           </div>
         ))}
